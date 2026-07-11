@@ -8,6 +8,7 @@ import {
   takeLimit,
 } from "../args.js";
 import { makeGateway } from "../linear.js";
+import { parseFieldsFlag } from "../utils.js";
 import {
   field,
   formatCountLine,
@@ -16,6 +17,7 @@ import {
   renderList,
   renderOutput,
   truncateText,
+  type FieldDef,
 } from "../toon.js";
 
 export const ISSUES_HELP = `usage: linear-axi issues <subcommand> [flags]
@@ -42,12 +44,22 @@ examples:
   linear-axi issues create --team ENG --title "Fix auth" --dry-run
 `;
 
-const listSchema = [
+const listSchema: FieldDef[] = [
   field("identifier"),
   field("title"),
   field("state"),
   field("assignee"),
 ];
+
+const LIST_FIELD_NAMES = new Set([
+  "id",
+  "identifier",
+  "title",
+  "state",
+  "assignee",
+  "updatedAt",
+  "url",
+]);
 
 const commentSchema = [
   field("author"),
@@ -100,6 +112,20 @@ async function issuesList(args: string[]): Promise<string> {
     ]);
   }
   const limit = takeLimit(args, 20);
+  let schema: FieldDef[];
+  try {
+    schema = parseFieldsFlag(
+      takeFlag(args, "--fields"),
+      LIST_FIELD_NAMES,
+      listSchema,
+    );
+  } catch (error) {
+    throw new AxiError(
+      error instanceof Error ? error.message : "Invalid --fields value",
+      "VALIDATION_ERROR",
+      ["Usage: linear-axi issues list --fields identifier,title,state,url"],
+    );
+  }
   const gateway = makeGateway();
   const { issues } = await gateway.listIssues({
     limit,
@@ -111,7 +137,7 @@ async function issuesList(args: string[]): Promise<string> {
   return renderOutput([
     `count: ${formatCountLine(issues.length)} issues shown`,
     issues.length > 0
-      ? renderList("issues", issues, listSchema)
+      ? renderList("issues", issues, schema)
       : "issues: 0 issues matched this query",
     renderHelp(
       issues.length === 0

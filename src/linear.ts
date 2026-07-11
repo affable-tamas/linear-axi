@@ -2,6 +2,8 @@ import { LinearClient, type Issue, type IssueSearchResult, type Team, type User 
 import { AxiError } from "axi-sdk-js";
 import type { Env } from "./env.js";
 import { loadEnv } from "./env.js";
+import { DEFAULT_OAUTH_CLIENT_ID, refreshOAuthToken } from "./oauth.js";
+import { isNotFoundError } from "./utils.js";
 
 export interface Credentials {
   kind: "apiKey" | "accessToken";
@@ -99,9 +101,19 @@ export class LinearGateway {
     this.env = env;
   }
 
-  private getClient(): LinearClient {
-    const credentials = credentialsFromEnv(this.env);
-    if (!credentials) {
+  private async getClient(): Promise<LinearClient> {
+    const apiKey = this.env.LINEAR_API_KEY;
+    if (apiKey && apiKey.length > 0) {
+      return new LinearClient({ apiKey });
+    }
+
+    const accessToken = await this.ensureAccessToken();
+    return new LinearClient({ accessToken });
+  }
+
+  private async ensureAccessToken(): Promise<string> {
+    const token = this.env.LINEAR_ACCESS_TOKEN;
+    if (!token || token.length === 0) {
       throw new AxiError(
         "Linear credentials are not configured",
         "AUTH_ERROR",
@@ -111,9 +123,33 @@ export class LinearGateway {
         ],
       );
     }
-    return credentials.kind === "apiKey"
-      ? new LinearClient({ apiKey: credentials.value })
-      : new LinearClient({ accessToken: credentials.value });
+
+    const expiresAt = this.env.LINEAR_OAUTH_EXPIRES_AT;
+    const refreshToken = this.env.LINEAR_OAUTH_REFRESH_TOKEN;
+    const clientId =
+      this.env.LINEAR_OAUTH_CLIENT_ID ?? DEFAULT_OAUTH_CLIENT_ID;
+
+    if (!expiresAt || !refreshToken) {
+      return token;
+    }
+
+    const expiryMs = new Date(expiresAt).getTime();
+    if (Number.isNaN(expiryMs) || Date.now() < expiryMs - 60_000) {
+      return token;
+    }
+
+    const refreshed = await refreshOAuthToken({
+      clientId,
+      refreshToken,
+    });
+    this.env.LINEAR_ACCESS_TOKEN = refreshed.access_token;
+    this.env.LINEAR_OAUTH_EXPIRES_AT = new Date(
+      Date.now() + refreshed.expires_in * 1000,
+    ).toISOString();
+    if (refreshed.refresh_token) {
+      this.env.LINEAR_OAUTH_REFRESH_TOKEN = refreshed.refresh_token;
+    }
+    return refreshed.access_token;
   }
 
   async authStatus(): Promise<AuthStatus> {
@@ -121,7 +157,7 @@ export class LinearGateway {
     if (!credentials) {
       return { authenticated: false, method: "none" };
     }
-    const client = this.getClient();
+    const client = await this.getClient();
     const viewer = await client.viewer;
     return {
       authenticated: true,
@@ -135,7 +171,7 @@ export class LinearGateway {
   }
 
   async listTeams(limit: number): Promise<TeamSummary[]> {
-    const client = this.getClient();
+    const client = await this.getClient();
     const teams = await client.teams({ first: limit });
     return teams.nodes.map(teamSummary);
   }
@@ -146,19 +182,43 @@ export class LinearGateway {
     team?: string;
     state?: string;
   }): Promise<{ issues: IssueSummary[]; total?: number }> {
-    const client = this.getClient();
+    const client = await this.getClient();
+
+    if (input.state && !input.team) {
+      throw new AxiError(
+        "--team is required when filtering by --state",
+        "VALIDATION_ERROR",
+        ["Usage: linear-axi issues list --team ENG --state \"In Progress\""],
+      );
+    }
 
     if (input.team) {
       const team = await this.findTeam(input.team);
+      const viewer = input.assignee === "me" ? await client.viewer : undefined;
       const stateId = input.state
         ? (await this.findState(input.state, team.id)).id
         : undefined;
+
+      const filter: {
+        state?: { id: { eq: string } };
+        assignee?: { id: { eq: string } };
+      } = {};
+      if (stateId) {
+        filter.state = { id: { eq: stateId } };
+      }
+      if (viewer) {
+        filter.assignee = { id: { eq: viewer.id } };
+      }
+
       const issues = await team.issues({
         first: input.limit,
-        filter: stateId ? { state: { id: { eq: stateId } } } : undefined,
+        filter: Object.keys(filter).length > 0 ? filter : undefined,
       });
       const summaries = await Promise.all(issues.nodes.map(issueSummary));
-      return { issues: summaries, total: issues.pageInfo.hasNextPage ? undefined : summaries.length };
+      return {
+        issues: summaries,
+        total: issues.pageInfo.hasNextPage ? undefined : summaries.length,
+      };
     }
 
     if (input.assignee === "me") {
@@ -178,7 +238,7 @@ export class LinearGateway {
     team?: string;
     limit: number;
   }): Promise<IssueSummary[]> {
-    const client = this.getClient();
+    const client = await this.getClient();
     const teamId = input.team
       ? (await this.findTeam(input.team)).id
       : undefined;
@@ -192,9 +252,9 @@ export class LinearGateway {
   async viewIssue(id: string): Promise<{
     issue: IssueDetail;
     comments: CommentSummary[];
-    commentTotal: number;
+    commentTotal?: number;
   }> {
-    const client = this.getClient();
+    const client = await this.getClient();
     const issue = await this.findIssue(id);
     const detail = await issueDetail(issue);
     const commentsConn = await issue.comments({ first: 5 });
@@ -213,7 +273,7 @@ export class LinearGateway {
       issue: detail,
       comments,
       commentTotal: commentsConn.pageInfo.hasNextPage
-        ? comments.length + 1
+        ? undefined
         : comments.length,
     };
   }
@@ -223,7 +283,7 @@ export class LinearGateway {
     title: string;
     description?: string;
   }): Promise<IssueSummary> {
-    const client = this.getClient();
+    const client = await this.getClient();
     const team = await this.findTeam(input.team);
     const payload = await client.createIssue({
       teamId: team.id,
@@ -241,7 +301,7 @@ export class LinearGateway {
     title?: string;
     description?: string;
   }): Promise<IssueSummary> {
-    const client = this.getClient();
+    const client = await this.getClient();
     const issue = await this.findIssue(input.id);
     const payload = await client.updateIssue(issue.id, {
       title: input.title,
@@ -257,7 +317,7 @@ export class LinearGateway {
     id: string;
     user: string;
   }): Promise<{ issue: IssueSummary; noop: boolean }> {
-    const client = this.getClient();
+    const client = await this.getClient();
     const issue = await this.findIssue(input.id);
     const user = await this.findUser(input.user);
     const currentAssignee = await issue.assignee;
@@ -277,7 +337,7 @@ export class LinearGateway {
     id: string;
     state: string;
   }): Promise<{ issue: IssueSummary; noop: boolean }> {
-    const client = this.getClient();
+    const client = await this.getClient();
     const issue = await this.findIssue(input.id);
     const team = await issue.team;
     const state = await this.findState(input.state, team?.id);
@@ -298,7 +358,7 @@ export class LinearGateway {
     issue: string;
     body: string;
   }): Promise<CommentSummary & { issueId: string; url: string }> {
-    const client = this.getClient();
+    const client = await this.getClient();
     const issue = await this.findIssue(input.issue);
     const payload = await client.createComment({
       issueId: issue.id,
@@ -320,7 +380,7 @@ export class LinearGateway {
   }
 
   async listLabels(teamKey?: string): Promise<LabelSummary[]> {
-    const client = this.getClient();
+    const client = await this.getClient();
     if (teamKey) {
       const team = await this.findTeam(teamKey);
       const labels = await team.labels({ first: 100 });
@@ -339,7 +399,7 @@ export class LinearGateway {
   }
 
   async listStates(teamKey?: string): Promise<StateSummary[]> {
-    const client = this.getClient();
+    const client = await this.getClient();
     if (!teamKey) {
       throw new AxiError(
         "--team is required for states list",
@@ -357,7 +417,7 @@ export class LinearGateway {
   }
 
   async listProjects(limit: number): Promise<ProjectSummary[]> {
-    const client = this.getClient();
+    const client = await this.getClient();
     const projects = await client.projects({ first: limit });
     return Promise.all(
       projects.nodes.map(async (project) => ({
@@ -369,13 +429,13 @@ export class LinearGateway {
   }
 
   async usersMe(): Promise<UserSummary> {
-    const client = this.getClient();
+    const client = await this.getClient();
     const viewer = await client.viewer;
     return { id: viewer.id, name: viewer.name, email: viewer.email };
   }
 
   async resolveTeam(query: string): Promise<ResolveResult> {
-    const client = this.getClient();
+    const client = await this.getClient();
     if (isUuid(query)) {
       const team = await client.team(query);
       return {
@@ -405,7 +465,7 @@ export class LinearGateway {
   }
 
   async resolveIssue(query: string): Promise<ResolveResult> {
-    const client = this.getClient();
+    const client = await this.getClient();
     try {
       const issue = await client.issue(query);
       const summary = await issueSummary(issue);
@@ -417,8 +477,11 @@ export class LinearGateway {
           name: summary.title,
         },
       };
-    } catch {
-      return { candidates: [], ambiguous: false };
+    } catch (error) {
+      if (isNotFoundError(error)) {
+        return { candidates: [], ambiguous: false };
+      }
+      throw error;
     }
   }
 
@@ -446,7 +509,7 @@ export class LinearGateway {
   }
 
   async resolveUser(query: string): Promise<ResolveResult> {
-    const client = this.getClient();
+    const client = await this.getClient();
     const users = await client.users({ first: 50 });
     const matches = users.nodes.filter(
       (u) =>
@@ -466,7 +529,7 @@ export class LinearGateway {
   }
 
   private async findTeam(keyOrId: string): Promise<Team> {
-    const client = this.getClient();
+    const client = await this.getClient();
     if (isUuid(keyOrId)) {
       return client.team(keyOrId);
     }
@@ -488,7 +551,7 @@ export class LinearGateway {
   }
 
   private async findIssue(idOrKey: string): Promise<Issue> {
-    const client = this.getClient();
+    const client = await this.getClient();
     return client.issue(idOrKey);
   }
 
@@ -508,7 +571,7 @@ export class LinearGateway {
         ["Run `linear-axi users me` or try an email address"],
       );
     }
-    const client = this.getClient();
+    const client = await this.getClient();
     return client.user(result.resolved.id);
   }
 
@@ -526,7 +589,7 @@ export class LinearGateway {
         ["Pass --team when filtering or changing state"],
       );
     }
-    const client = this.getClient();
+    const client = await this.getClient();
     const team = await client.team(teamId);
     const states = await team.states();
     const matches = states.nodes.filter((s) =>

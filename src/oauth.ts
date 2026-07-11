@@ -9,11 +9,14 @@ import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { AxiError } from "axi-sdk-js";
 import { parseDotEnv, type Env } from "./env.js";
+import { isListedInGitignore } from "./utils.js";
 
 const authorizeEndpoint = "https://linear.app/oauth/authorize";
 const tokenEndpoint = "https://api.linear.app/oauth/token";
 const defaultRedirectUri = "http://127.0.0.1:14582/oauth/callback";
 const defaultClientId = "ccca1dd4294ba5c02db81a5db629ba17";
+
+export const DEFAULT_OAUTH_CLIENT_ID = defaultClientId;
 
 export interface OAuthConnectInput {
   env: Env;
@@ -290,6 +293,11 @@ function handleCallbackRequest(
   if (!code) {
     response.writeHead(400, { "content-type": "text/plain" });
     response.end("Missing OAuth code");
+    settle(
+      new AxiError("OAuth callback missing authorization code", "AUTH_ERROR", [
+        "Restart `linear-axi auth login` and complete Linear authorization",
+      ]),
+    );
     return;
   }
 
@@ -401,13 +409,14 @@ function ensureEnvFileCanStoreSecrets(envFile: string, cwd: string): void {
     cwd,
     stdio: "ignore",
   });
-  if (result.status !== 0) {
-    throw new AxiError(
-      "refusing to write OAuth tokens to a tracked env file",
-      "VALIDATION_ERROR",
-      ["Add `.env` to .gitignore, then rerun with `--write-env`"],
-    );
+  if (result.status === 0 || isListedInGitignore(relative, cwd)) {
+    return;
   }
+  throw new AxiError(
+    "refusing to write OAuth tokens to a tracked env file",
+    "VALIDATION_ERROR",
+    ["Add `.env` to .gitignore, then rerun with `--write-env`"],
+  );
 }
 
 function writeOAuthEnv(
@@ -521,6 +530,29 @@ function relativeToCwd(file: string, cwd: string): string {
 function collapseCwd(file: string, cwd: string): string {
   const relative = relativeToCwd(file, cwd);
   return relative.startsWith("/") ? file : relative;
+}
+
+export async function refreshOAuthToken(input: {
+  clientId: string;
+  refreshToken: string;
+}): Promise<OAuthTokenResponse> {
+  const body = new URLSearchParams({
+    grant_type: "refresh_token",
+    client_id: input.clientId,
+    refresh_token: input.refreshToken,
+  });
+  const response = await fetch(tokenEndpoint, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body,
+  });
+  const json = (await response.json()) as Record<string, unknown>;
+  if (!response.ok) {
+    throw new AxiError(readOAuthError(json, response.status), "AUTH_ERROR", [
+      "Rerun `linear-axi auth login --write-env` to reconnect OAuth",
+    ]);
+  }
+  return tokenResponse(json);
 }
 
 function readableError(cause: unknown): string {
