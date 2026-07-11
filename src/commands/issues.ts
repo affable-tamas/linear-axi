@@ -204,7 +204,7 @@ async function issuesView(args: string[]): Promise<string> {
         field("description"),
       ],
     ),
-    `comments: ${formatCountLine(comments.length, commentTotal)} shown`,
+    `comments: ${formatCountLine(comments.length, commentTotal)}`,
   ];
 
   if (comments.length > 0) {
