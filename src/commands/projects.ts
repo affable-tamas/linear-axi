@@ -10,6 +10,7 @@ import {
 } from "../toon.js";
 
 export const PROJECTS_HELP = `usage: linear-axi projects list [--limit 20]
+  --limit max 250
 examples:
   linear-axi projects list
 `;

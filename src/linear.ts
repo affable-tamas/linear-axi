@@ -2,7 +2,7 @@ import { LinearClient, type Issue, type IssueSearchResult, type Team, type User 
 import { AxiError } from "axi-sdk-js";
 import type { Env } from "./env.js";
 import { loadEnv } from "./env.js";
-import { DEFAULT_OAUTH_CLIENT_ID, refreshOAuthToken } from "./oauth.js";
+import { DEFAULT_OAUTH_CLIENT_ID, persistRefreshedOAuthTokens, refreshOAuthToken } from "./oauth.js";
 import { isNotFoundError } from "./utils.js";
 
 export interface Credentials {
@@ -149,6 +149,10 @@ export class LinearGateway {
     if (refreshed.refresh_token) {
       this.env.LINEAR_OAUTH_REFRESH_TOKEN = refreshed.refresh_token;
     }
+    persistRefreshedOAuthTokens({
+      env: this.env,
+      cwd: process.cwd(),
+    });
     return refreshed.access_token;
   }
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { AxiError } from "axi-sdk-js";
 import {
   getFlag,
+  MAX_LIMIT,
   rejectUnknownFlags,
   takeBoolFlag,
   takeFlag,
@@ -33,6 +34,9 @@ describe("args", () => {
 
   it("rejects invalid limit", () => {
     expect(() => takeLimit(["--limit", "0"], 20)).toThrow(AxiError);
+    expect(() => takeLimit(["--limit", String(MAX_LIMIT + 1)], 20)).toThrow(
+      AxiError,
+    );
   });
 
   it("rejects unknown flags", () => {

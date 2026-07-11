@@ -6,10 +6,9 @@ import {
   type ServerResponse,
 } from "node:http";
 import { resolve } from "node:path";
-import { spawnSync } from "node:child_process";
 import { AxiError } from "axi-sdk-js";
 import { parseDotEnv, type Env } from "./env.js";
-import { isListedInGitignore } from "./utils.js";
+import { isPathGitignored } from "./utils.js";
 
 const authorizeEndpoint = "https://linear.app/oauth/authorize";
 const tokenEndpoint = "https://api.linear.app/oauth/token";
@@ -80,6 +79,9 @@ export async function connectOAuth(input: OAuthConnectInput): Promise<{
   process.stderr.write(`Open this Linear OAuth URL:\n${session.authorizeUrl}\n`);
   process.stderr.write(
     "If the browser cannot reach localhost after approval, paste the full callback URL here and press Enter.\n",
+  );
+  process.stderr.write(
+    "Do not share terminal output or logs while entering the callback URL.\n",
   );
 
   const code = await waitForOAuthCode({
@@ -184,6 +186,7 @@ async function waitForOAuthCode(input: {
       clearTimeout(timer);
       process.stdin.off("data", onManualCallback);
       process.stdin.pause();
+      manualBuffer = "";
       server.closeAllConnections();
       server.close();
     };
@@ -405,11 +408,7 @@ function ensureEnvFileCanStoreSecrets(envFile: string, cwd: string): void {
       ["Use a repo-local .env file"],
     );
   }
-  const result = spawnSync("git", ["check-ignore", "-q", "--", relative], {
-    cwd,
-    stdio: "ignore",
-  });
-  if (result.status === 0 || isListedInGitignore(relative, cwd)) {
+  if (isPathGitignored(relative, cwd)) {
     return;
   }
   throw new AxiError(
@@ -553,6 +552,31 @@ export async function refreshOAuthToken(input: {
     ]);
   }
   return tokenResponse(json);
+}
+
+export function persistRefreshedOAuthTokens(input: {
+  env: Env;
+  cwd: string;
+  envFile?: string;
+}): boolean {
+  const envFile = resolve(input.cwd, input.envFile ?? ".env");
+  if (!existsSync(envFile)) {
+    return false;
+  }
+
+  try {
+    ensureEnvFileCanStoreSecrets(envFile, input.cwd);
+  } catch {
+    return false;
+  }
+
+  writeOAuthEnv(envFile, {
+    LINEAR_OAUTH_CLIENT_ID: input.env.LINEAR_OAUTH_CLIENT_ID,
+    LINEAR_ACCESS_TOKEN: input.env.LINEAR_ACCESS_TOKEN,
+    LINEAR_OAUTH_REFRESH_TOKEN: input.env.LINEAR_OAUTH_REFRESH_TOKEN,
+    LINEAR_OAUTH_EXPIRES_AT: input.env.LINEAR_OAUTH_EXPIRES_AT,
+  });
+  return true;
 }
 
 function readableError(cause: unknown): string {

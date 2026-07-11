@@ -11,6 +11,7 @@ import {
 } from "../toon.js";
 
 export const TEAMS_HELP = `usage: linear-axi teams list [--limit 50]
+  --limit max 250
 examples:
   linear-axi teams list
   linear-axi teams list --limit 25
