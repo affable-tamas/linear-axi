@@ -17,7 +17,6 @@ import {
   CAPABILITIES_HELP,
 } from "./commands/capabilities.js";
 import { setupCommand, SETUP_HELP } from "./commands/setup.js";
-import { loadEnv } from "./env.js";
 
 export const DESCRIPTION =
   "Browse and manage Linear issues, teams, and comments with token-efficient TOON output.";
@@ -65,9 +64,7 @@ export async function main(options: MainOptions = {}): Promise<void> {
     description: DESCRIPTION,
     version: VERSION,
     topLevelHelp: TOP_LEVEL_HELP,
-    initialize: () => {
-      Object.assign(process.env, loadEnv());
-    },
+    initialize: () => {},
     home: homeCommand,
     getCommandHelp: (command) => COMMAND_HELP[command],
     commands: {

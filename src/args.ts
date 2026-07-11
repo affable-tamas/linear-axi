@@ -1,5 +1,7 @@
 import { AxiError } from "axi-sdk-js";
 
+export const MAX_LIMIT = 250;
+
 function flagEqualsPrefix(flag: string): string {
   return `${flag}=`;
 }
@@ -57,6 +59,13 @@ export function takeLimit(args: string[], fallback: number): number {
       "--limit must be a positive integer",
       "VALIDATION_ERROR",
       ["Usage: --limit 20"],
+    );
+  }
+  if (n > MAX_LIMIT) {
+    throw new AxiError(
+      `--limit must be at most ${MAX_LIMIT}`,
+      "VALIDATION_ERROR",
+      [`Usage: --limit ${MAX_LIMIT}`],
     );
   }
   return n;

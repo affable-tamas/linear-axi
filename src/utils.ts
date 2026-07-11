@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { FieldDef } from "./toon.js";
@@ -31,27 +32,90 @@ export function parseFieldsFlag(
   return names.map((name) => field(name));
 }
 
+function globToRegExp(pattern: string): RegExp {
+  const anchored = pattern.startsWith("/");
+  const body = anchored ? pattern.slice(1) : pattern;
+  const regexBody = body
+    .split("/")
+    .map((segment) =>
+      segment
+        .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+        .replace(/\*\*/g, "\0")
+        .replace(/\*/g, "[^/]*")
+        .replace(/\0/g, ".*"),
+    )
+    .join("/");
+  const source = anchored ? `^${regexBody}$` : `(^|/)${regexBody}$`;
+  return new RegExp(source);
+}
+
+function matchesGitignorePattern(relative: string, pattern: string): boolean {
+  const target = relative.split("/").pop() ?? relative;
+
+  if (pattern.startsWith("**/")) {
+    const suffix = pattern.slice(3);
+    return (
+      relative === suffix ||
+      relative.endsWith(`/${suffix}`) ||
+      target === suffix
+    );
+  }
+
+  if (!pattern.includes("*") && !pattern.startsWith("/")) {
+    if (pattern.endsWith("/")) {
+      return (
+        relative.startsWith(pattern) || relative === pattern.slice(0, -1)
+      );
+    }
+    return pattern === relative || pattern === target;
+  }
+
+  const regex = globToRegExp(pattern);
+  return (
+    regex.test(relative) ||
+    (!pattern.startsWith("/") && regex.test(target))
+  );
+}
+
 export function isListedInGitignore(relative: string, cwd: string): boolean {
   const gitignorePath = resolve(cwd, ".gitignore");
   if (!existsSync(gitignorePath)) {
     return false;
   }
 
-  const target = relative.split("/").pop() ?? relative;
   const lines = readFileSync(gitignorePath, "utf8")
     .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0 && !line.startsWith("#"));
+    .map((line) => line.trim());
 
-  return lines.some((pattern) => {
-    if (pattern === relative || pattern === target) {
-      return true;
+  let ignored = false;
+  for (const line of lines) {
+    if (!line || line.startsWith("#")) continue;
+    if (line.startsWith("!")) {
+      const pattern = line.slice(1).trim();
+      if (matchesGitignorePattern(relative, pattern)) {
+        ignored = false;
+      }
+      continue;
     }
-    if (pattern.endsWith("/") && relative.startsWith(pattern)) {
-      return true;
+    if (matchesGitignorePattern(relative, line)) {
+      ignored = true;
     }
-    return pattern === ".env" && target === ".env";
+  }
+  return ignored;
+}
+
+export function isPathGitignored(relative: string, cwd: string): boolean {
+  const result = spawnSync("git", ["check-ignore", "-q", "--", relative], {
+    cwd,
+    stdio: "ignore",
   });
+  if (result.status === 0) {
+    return true;
+  }
+  if (result.status === 1 && !result.error) {
+    return false;
+  }
+  return isListedInGitignore(relative, cwd);
 }
 
 export function isNotFoundError(error: unknown): boolean {

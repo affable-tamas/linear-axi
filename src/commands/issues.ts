@@ -24,9 +24,9 @@ export const ISSUES_HELP = `usage: linear-axi issues <subcommand> [flags]
 subcommands[7]:
   list, search, view, create, update, assign, state
 flags{list}:
-  --assignee me, --team, --state, --limit (default 20), --fields
+  --assignee me, --team, --state, --limit (default 20, max 250), --fields
 flags{search}:
-  --query (required), --team, --limit (default 20)
+  --query (required), --team, --limit (default 20, max 250)
 flags{view}:
   --id (required), --full
 flags{create}:

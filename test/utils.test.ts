@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   isListedInGitignore,
   isNotFoundError,
+  isPathGitignored,
   parseFieldsFlag,
 } from "../src/utils.js";
 import { field } from "../src/toon.js";
@@ -31,5 +32,23 @@ describe("utils", () => {
     writeFileSync(join(dir, ".gitignore"), ".env\n");
     expect(isListedInGitignore(".env", dir)).toBe(true);
     expect(isListedInGitignore("secrets.txt", dir)).toBe(false);
+  });
+
+  it("matches common gitignore glob patterns", () => {
+    const dir = mkdtempSync(join(tmpdir(), "linear-axi-"));
+    writeFileSync(join(dir, ".gitignore"), "**/.env\n");
+    expect(isListedInGitignore(".env", dir)).toBe(true);
+    expect(isListedInGitignore("config/.env", dir)).toBe(true);
+  });
+
+  it("honors gitignore negation rules", () => {
+    const dir = mkdtempSync(join(tmpdir(), "linear-axi-"));
+    writeFileSync(join(dir, ".gitignore"), "*.env\n!.env\n");
+    expect(isListedInGitignore(".env", dir)).toBe(false);
+    expect(isListedInGitignore("secrets.env", dir)).toBe(true);
+  });
+
+  it("uses git check-ignore when available", () => {
+    expect(isPathGitignored(".env", process.cwd())).toBe(true);
   });
 });
